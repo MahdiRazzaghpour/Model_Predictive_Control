@@ -4,7 +4,7 @@ import cvxpy
 import math
 import numpy as np
 import sys
-sys.path.append("../../PathPlanning/CubicSpline/")
+sys.path.append("../../PathPlanning/CubicSpline")
 
 try:
     import cubic_spline_planner
@@ -442,14 +442,14 @@ def do_simulation(cx, cy, cyaw, ck, sp, dl, initial_state):
 def calc_speed_profile(cx, cy, cyaw, target_speed):
 
     speed_profile = [target_speed] * len(cx)
-    
+
     direction = 1.0  # forward
 
     # Set stop point
     for i in range(len(cx) - 1):
         dx = cx[i + 1] - cx[i]
         dy = cy[i + 1] - cy[i]
-        
+
         move_direction = math.atan2(dy, dx)
 
         if dx != 0.0 and dy != 0.0:

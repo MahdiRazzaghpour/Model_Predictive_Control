@@ -70,7 +70,7 @@ def SHMPCF (A,B,D,acc,V_min,V_max,a_min,a_max,x_0,N,R,Q,l,T,V_0,t_s,P_w,P_hat,q_
     return x.value,v.value,d2.value[0]
 
 # Main
-V_N = 10 #number of vehicles
+V_N = 1 #number of vehicles
 T_F = 700
 t_s = 0.1 # sampling time
 N = 7  #prediction horizon

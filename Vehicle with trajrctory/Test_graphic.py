@@ -18,8 +18,9 @@ import math
 import numpy as np
 import sys
 import collections
+import cubic_spline_planner
 
-sys.path.append("../../")
+sys.path.append("Users\ma121036\Documents\GitHub\Model_Predictive_Control\Vehicle with trajrctory")
 
 try:
     import cubic_spline_planner
@@ -581,7 +582,7 @@ def get_straight_course3(dl):
     ##ay = [-7.414981365203857, -7.48966121673584, -7.564340591430664, -7.639019966125488, -7.713699817657471, -7.788379669189453, -10.788379669189453, -14.788379669189453, -19.788379669189453, -24.788379669189453, -28.788379669189453]
     ##tt = [0.0, 1.0, 3.0, 5.0, 7.0, 8.0, 10.0, 11.0, 13.0, 14.0]
 
-    df = pandas.read_csv('/MPC/Shahriar/racetrack_test.csv', header=None)
+    df = pandas.read_csv('racetrack_test.csv', header=None)
     data = df.to_numpy()
     m = len(data)
     x1 = np.array(data[:, 0])
@@ -643,11 +644,11 @@ def main():
     print(__file__ + " start!!")
 
     dl = 3.5  # course tick
-    # cx, cy, cyaw, ck = get_straight_course(dl)
-    # cx, cy, cyaw, ck = get_straight_course2(dl)
+    #cx, cy, cyaw, ck = get_straight_course(dl)
+    #cx, cy, cyaw, ck = get_straight_course2(dl)
     # cx, cy, cyaw, ck = get_straight_course3(dl)
     # cx, cy, cyaw, ck = get_forward_course(dl)
-    cx, cy, cyaw, ck, tt = get_switch_back_course(dl)
+    #cx, cy, cyaw, ck, tt = get_switch_back_course(dl)
 
     # TARGET_SPEED = math.sqrt()
     sp = calc_speed_profile(cx, cy, cyaw, tt)
@@ -682,7 +683,7 @@ def main2():
 
     dl = 2.0 # course tick
     cx, cy, cyaw, ck, tt = get_straight_course3(dl)
-    # cx, cy, cyaw, ck ,tt = get_straight_course(dl)
+    #cx, cy, cyaw, ck ,tt = get_straight_course(dl)
 
     sp = calc_speed_profile(cx, cy, cyaw, tt)
 
@@ -712,5 +713,5 @@ def main2():
 
 
 if __name__ == '__main__':
-    # main()
+    #main()
     main2()

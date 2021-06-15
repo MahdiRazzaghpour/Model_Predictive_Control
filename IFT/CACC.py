@@ -4,31 +4,29 @@ Cooperative Adaptive Cruise Control  Simulator.
 # ==============================================================================
 # --     Imports      ----------------------------------------------------------
 # ==============================================================================
-import numpy as np
 import matplotlib.pyplot as plt
-import cvxpy
+from matplotlib.pyplot import cm
+import numpy as np
+import cvxpy as cp
+from cvxpy import *
+import random
 import math
 import scipy
-import cubic_spline_planner
-import random
+import scipy.stats as ss
 import seaborn as sns
 from scipy.io import loadmat
 import pickle
 # ==============================================================================
 # -- Initialization   ----------------------------------------------------------
 # ==============================================================================
-show_animation = False#True#False
 Number_of_vehicels = 15
 inter_vehicle_time = 0.8 #s
 communication_error_rate = 0.0 # percent
 
-# Optimization paramter
-MAX_ITER = 5  # Max iteration: number of iteration
-DU_TH = 0.5   # iteration finish parameter: Threshold of the input difference
-T = 10    # horizon length
+T = 10    # prediction horizon
 
 CT = 0.1    # communication time tick [s]
-DT = 0.1  # simulator time tick [s]  ####CT/4####
+DT = 0.1  # simulator time tick [s]
 dl = 1.0  # course tick [m]
 NX = 4    # x = [x, y, v, yaw]
 NU = 2    # a = [accel, steer]
@@ -54,56 +52,6 @@ speed_weight = 300
 # ==============================================================================
 # -- Global functions ----------------------------------------------------------
 # ==============================================================================
-def pi_2_pi(angle):
-    while(angle > math.pi):
-        angle = angle - 2.0 * math.pi
-
-    while(angle < -math.pi):
-        angle = angle + 2.0 * math.pi
-
-    return angle
-
-def get_linear_model_matrix(v, phi, delta,vehicle):
-
-    A = np.zeros((NX, NX))
-    A[0, 0] = 1.0
-    A[1, 1] = 1.0
-    A[2, 2] = 1.0
-    A[3, 3] = 1.0
-    A[0, 2] = DT * math.cos(phi)
-    A[0, 3] = - DT * v * math.sin(phi)
-    A[1, 2] = DT * math.sin(phi)
-    A[1, 3] = DT * v * math.cos(phi)
-    A[3, 2] = DT * math.tan(delta) / vehicle.WB
-
-    B = np.zeros((NX, NU))
-    B[2, 0] = DT
-    B[3, 1] = DT * v / (vehicle.WB * math.cos(delta) ** 2)
-
-    C = np.zeros(NX)
-    C[0] = DT * v * math.sin(phi) * phi
-    C[1] = - DT * v * math.cos(phi) * phi
-    C[3] = - DT * v * delta / (vehicle.WB * math.cos(delta) ** 2)
-
-    return A, B, C
-
-def get_nparray_from_matrix(x):
-    return np.array(x).flatten()
-
-def check_goal(vehicle, tind, nind):
-    """
-    Checking if we have reached our destination
-    vehicle: object-car, tind: current index, nind: final index,
-    cx: course-x, cy: course-y, sp: speed profile
-    """
-    dx = vehicle.x - cx[-1]
-    dy = vehicle.y - cy[-1]
-    d = math.hypot(dx, dy)
-    isgoal = (d <= GOAL_DIS)
-    if isgoal:
-        return True
-    return False
-
 def calc_error(vehicle,neighbor):
     delta_d =  np.sqrt((vehicle.x-neighbor.x)**2 + (vehicle.y - neighbor.y)**2)
     value = delta_d/vehicle.v - inter_vehicle_time
@@ -193,137 +141,6 @@ class Agent():
     def receive(self, message_list):
         self.leaders = message_list
 
-    # def error(self, error_list):
-    #     self.errors = error_list
-
-
-    def plot_car(self, cabcolor="-g", truckcolor="-k"):  # pragma: no cover
-
-        outline = np.array([[-self.BACKTOWHEEL, (self.LENGTH - self.BACKTOWHEEL), (self.LENGTH - self.BACKTOWHEEL), -self.BACKTOWHEEL, -self.BACKTOWHEEL],
-                            [self.WIDTH / 2, self.WIDTH / 2, - self.WIDTH / 2, -self.WIDTH / 2, self.WIDTH / 2]])
-
-        fr_wheel = np.array([[self.WHEEL_LEN, -self.WHEEL_LEN, -self.WHEEL_LEN, self.WHEEL_LEN, self.WHEEL_LEN],
-                             [-self.WHEEL_WIDTH - self.TREAD, -self.WHEEL_WIDTH - self.TREAD, self.WHEEL_WIDTH - self.TREAD, self.WHEEL_WIDTH - self.TREAD, -self.WHEEL_WIDTH - self.TREAD]])
-
-        rr_wheel = np.copy(fr_wheel)
-
-        fl_wheel = np.copy(fr_wheel)
-        fl_wheel[1, :] *= -1
-        rl_wheel = np.copy(rr_wheel)
-        rl_wheel[1, :] *= -1
-
-        Rot1 = np.array([[np.cos(self.yaw), np.sin(self.yaw)],
-                         [-np.sin(self.yaw), np.cos(self.yaw)]])
-        Rot2 = np.array([[np.cos(self.steer), np.sin(self.steer)],
-                         [-np.sin(self.steer), np.cos(self.steer)]])
-
-        fr_wheel = (fr_wheel.T.dot(Rot2)).T
-        fl_wheel = (fl_wheel.T.dot(Rot2)).T
-        fr_wheel[0, :] += self.WB
-        fl_wheel[0, :] += self.WB
-
-        fr_wheel = (fr_wheel.T.dot(Rot1)).T
-        fl_wheel = (fl_wheel.T.dot(Rot1)).T
-
-        outline = (outline.T.dot(Rot1)).T
-        rr_wheel = (rr_wheel.T.dot(Rot1)).T
-        rl_wheel = (rl_wheel.T.dot(Rot1)).T
-
-        outline[0, :] += self.x
-        outline[1, :] += self.y
-        fr_wheel[0, :] += self.x
-        fr_wheel[1, :] += self.y
-        rr_wheel[0, :] += self.x
-        rr_wheel[1, :] += self.y
-        fl_wheel[0, :] += self.x
-        fl_wheel[1, :] += self.y
-        rl_wheel[0, :] += self.x
-        rl_wheel[1, :] += self.y
-
-        plt.plot(np.array(outline[0, :]).flatten(),
-                 np.array(outline[1, :]).flatten(), truckcolor)
-        plt.plot(np.array(fr_wheel[0, :]).flatten(),
-                 np.array(fr_wheel[1, :]).flatten(), truckcolor)
-        plt.plot(np.array(rr_wheel[0, :]).flatten(),
-                 np.array(rr_wheel[1, :]).flatten(), truckcolor)
-        plt.plot(np.array(fl_wheel[0, :]).flatten(),
-                 np.array(fl_wheel[1, :]).flatten(), truckcolor)
-        plt.plot(np.array(rl_wheel[0, :]).flatten(),
-                 np.array(rl_wheel[1, :]).flatten(), truckcolor)
-        plt.plot(self.x, self.y, "*")
-
-    def calc_ref_trajectory(self, cx, cy, cyaw, sp, dl):
-        """
-        calculating and updating reference trajectory and index of the path for the vehicle
-        cx: course-x, cy: course-y, cyaw: speed profile, ck: curvature,
-        sp: speed profile, dl: euclidean distance between waypoints
-        """
-        xref = np.zeros((NX, T + 1))
-        dref = np.zeros((1, T + 1))
-        ncourse = len(cx)
-        pind = self.target_ind
-        ind, _ = Agent.calc_nearest_index(self, cx, cy, cyaw, pind)
-
-        if pind >= ind:
-            ind = pind
-
-        xref[0, 0] = cx[ind]
-        xref[1, 0] = cy[ind]
-        xref[2, 0] = sp[ind]
-        xref[3, 0] = cyaw[ind]
-        dref[0, 0] = 0.0  # steer operational point should be 0
-
-        travel = 0.0
-
-        for i in range(T + 1):
-            travel += abs(self.v) * DT     # calculating index based on traversed local path
-            dind = int(round(travel / dl))
-
-            if (ind + dind) < ncourse:
-                xref[0, i] = cx[ind + dind]
-                xref[1, i] = cy[ind + dind]
-                xref[2, i] = sp[ind + dind]
-                xref[3, i] = cyaw[ind + dind]
-                dref[0, i] = 0.0
-            else:
-                xref[0, i] = cx[ncourse - 1]
-                xref[1, i] = cy[ncourse - 1]
-                xref[2, i] = sp[ncourse - 1]
-                xref[3, i] = cyaw[ncourse - 1]
-                dref[0, i] = 0.0
-
-        self.xref = xref
-        self.target_ind =ind
-        self.dref = dref
-
-        return self
-
-    def calc_nearest_index(self, cx, cy, cyaw, pind):
-        """
-        calculating nearest index of the path relative to the vehicle
-        cx: course-x, cy: course-y, cyaw: speed profile,
-        ck: curvature, sp: speed profile, dl: euclidean distance between waypoints
-        """
-        dx = [self.x - icx for icx in cx[pind:(pind + N_IND_SEARCH)]]
-        dy = [self.y - icy for icy in cy[pind:(pind + N_IND_SEARCH)]]
-
-        d = [idx ** 2 + idy ** 2 for (idx, idy) in zip(dx, dy)]
-
-        mind = min(d)
-
-        ind = d.index(mind) + pind
-
-        mind = np.sqrt(mind)
-
-        dxl = cx[ind] - self.x
-        dyl = cy[ind] - self.y
-
-        angle = pi_2_pi(cyaw[ind] - math.atan2(dyl, dxl))
-        if angle < 0:
-            mind *= -1
-
-        return ind, mind
-
 class MPC:
     """
     MPC control class, solving optimization problem over cvxpy optimizer
@@ -358,28 +175,6 @@ class MPC:
         vehicle.yaw = xbar[3, 0]
 
         return xbar
-
-    def iterative_linear_mpc_control(xref, vehicle, dref, oa, od, vehicles_list):
-        """
-        MPC contorl with updating operational point iteraitvely.
-        dref: steering angle reference.
-        """
-
-        if oa is None or od is None:
-            oa = [0.0] * T
-            od = [0.0] * T
-
-        for i in range(MAX_ITER):
-            xbar = MPC.predict_motion(vehicle, oa, od, xref)
-            poa, pod = oa[:], od[:]
-            oa, od, ox, oy, oyaw, ov = MPC.linear_mpc_control(xref, xbar, vehicle, dref, vehicles_list)
-            du = sum(abs(oa - poa)) + sum(abs(od - pod))  # calc u change value
-            if du <= DU_TH:
-                break
-        # else:
-        #     print("Iterative is max iter")
-
-        return oa, od, ox, oy, oyaw, ov
 
     def linear_mpc_control(xref, xbar, vehicle, dref, vehicles_list):
         """
@@ -475,7 +270,6 @@ class communication():
                 self.x = self.x + self.v * np.cos(self.yaw) * DT
                 self.y = 0#self.y + self.v * np.sin(self.yaw) * DT
 
-
 # ==============================================================================
 # -- Simulation Loop -----------------------------------------------------------
 # ==============================================================================
@@ -489,26 +283,10 @@ def main():
     done = False
     initial = np.zeros(Number_of_vehicels)
 
-    #====================================================
-    #======initializing each vehicle object==============
-    #====================================================
-    # Cx_counter = 0
-    # for i in range(Number_of_vehicels-1):
-    #     diff = 0
-    #     while diff <= inter_vehicle_time*10:
-    #         diff += np.sqrt((cx[Cx_counter+1]-cx[Cx_counter])**2 + (cx[Cx_counter+1]-cx[Cx_counter])**2 )
-    #         Cx_counter += 1
-    #     initial[i+1] = Cx_counter
-    #
-    # print(initial)
 
     for i in range(Number_of_vehicels):
-        # initial_x = int(initial[Number_of_vehicels-i-1])
-        # cx[initial_x+3] , cy[initial_x+3]
-        #print(initial_x)
         print(i,(Number_of_vehicels-i-1)*inter_vehicle_time*15)
         vehicle = Agent(i, (Number_of_vehicels-i-1)*inter_vehicle_time*15 , 0, [cx[-1],cy[-1]] )
-        vehicle.target_ind, _ = vehicle.calc_nearest_index(cx, cy, cyaw, 0)
         vehicles_list.append(vehicle)
 
         message = communication(vehicle)
@@ -522,8 +300,6 @@ def main():
                 done = True
 
             vehicle.calc_ref_trajectory(cx, cy, cyaw, sp, dl)
-
-            #x0 = [vehicle.x, vehicle.y, vehicle.v, vehicle.yaw]  # current state
 
             if (counter % 1) == 0 :
                 vehicle.receive(message_list)
@@ -556,26 +332,6 @@ def main():
                 for message in message_list:
                     if message.ID == vehicle.ID:
                         message.send(vehicle)
-
-            if show_animation:  # pragma: no cover
-                # for stopping simulation with the esc key.
-                plt.gcf().canvas.mpl_connect('key_release_event',
-                        lambda event: [exit(0) if event.key == 'escape' else None])
-                if ox is not None:
-                    plt.plot(ox, oy, "xr", label="MPC")
-                plt.plot(cx, cy, "-r", label="course")
-                plt.plot(vehicle.hx, vehicle.hy, "ob", label="trajectory")
-                plt.plot(vehicle.xref[0, :], vehicle.xref[1, :], "xk", label="xref")
-                plt.plot(cx[vehicle.target_ind], cy[vehicle.target_ind], "xg", label="target")
-                vehicle.plot_car()
-                plt.axis("equal")
-                plt.grid(True)
-                plt.title("Time[s]:" + str(round(time, 2))
-                          + ", speed[km/h]:" + str(round(vehicle.v * 3.6, 2)))
-                if (vehicle.ID == Number_of_vehicels-1):
-                    plt.pause(0.00001)
-            # else:
-            #     print(time)
 
         time = time + DT
         counter = counter + 1
