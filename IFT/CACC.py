@@ -19,33 +19,38 @@ import pickle
 # ==============================================================================
 # -- Initialization   ----------------------------------------------------------
 # ==============================================================================
-Number_of_vehicels = 15
+V_N = 3 #number of vehicles
 inter_vehicle_time = 0.8 #s
 communication_error_rate = 0.0 # percent
 
-T = 10    # prediction horizon
+N = 10    # prediction horizon
 
 CT = 0.1    # communication time tick [s]
-DT = 0.1  # simulator time tick [s]
+t_s  = 0.1  # simulator time tick [s]
 dl = 1.0  # course tick [m]
 NX = 4    # x = [x, y, v, yaw]
 NU = 2    # a = [accel, steer]
 
-MAX_STEER = np.deg2rad(45.0)    # maximum steering angle [rad]
-MAX_DSTEER = np.deg2rad(30.0)   # maximum steering speed [rad/s]
-MAX_SPEED = 120 / 3.6            # maximum speed [m/s]
-MIN_SPEED = -20.0 / 3.6         # minimum speed [m/s]
-MAX_ACCEL = 1                 # maximum accel [m/ss]
+u_min = -4
+u_max = 4
+V_max = 30         # maximum speed [m/s]
+V_min = -10        # minimum speed [m/s]
+a_max = 3          # maximum accel [m/ss]
+a_min = -4
 
-N_IND_SEARCH = 10               # Search index number
+T = 1
+l_v = 5
+f = 0.1
+l = 2+l_v
 # ==============================================================================
 # --  MPC parameters  ----------------------------------------------------------
 # ==============================================================================
-R = np.diag([0.01, 0.01])  # input cost matrix  a = [accel, steer]
-Rd = np.diag([0.01, 10.0])  # input difference cost matrix  a = [accel, steer]
-Q = np.diag([1, 1, 100000, 3]) # state cost matrix  x = [x, y, v, yaw]
-Qf = Q  # state final matrix
-GOAL_DIS = 30 # goal distance
+R = np.array([l,0,0])
+Q = np.array([ [2,0,0] , [0,1,0] , [0,0,1] ])
+
+A = np.array([ [1 ,t_s,-T*t_s] , [0, 1 ,-t_s] , [0,0,1-t_s/f] ])
+B = np.array([0 , 0 , t_s/f])
+D = np.array([0 , t_s , 0])
 
 gap_weight = 200
 speed_weight = 300
@@ -62,12 +67,8 @@ def calc_error(vehicle,neighbor):
 raw_data = loadmat('trajectory_plot.mat')
 cx = raw_data['X']
 # cx=cx[0:100,:]
-cy = raw_data['Y']
-# cy=cy[0:100,:]
 sp = raw_data['V']
 # sp=sp[0:100,:]
-cyaw= raw_data['Yaw']
-# cyaw=cyaw[0:100,:]
 # ==============================================================================
 # -- Classes -------------------------------------------------------------------
 # ==============================================================================
@@ -96,50 +97,10 @@ class Agent():
         self.goal = goal
         self.steer = 0.0
 
-        self.xref = None
-        self.dref = None
-        self.target_ind = None
-        self.odelta = None
-        self.oa = None
         self.leaders = []
         self.error = 0
         self.error_bias=0
-# ==============================================================================
-# -- Vehicle's physical specifications   ---------------------------------------
-# ==============================================================================
-        self.LENGTH = 4.5       # [m]
-        self.WIDTH = 2.0        # [m]
-        self.BACKTOWHEEL = 1.0  # [m]
-        self.WHEEL_LEN = 0.3    # [m]
-        self.WHEEL_WIDTH = 0.2  # [m]
-        self.TREAD = 0.7        # [m]
-        self.WB = 2.5           # [m]
 
-    def update_state(self, a, delta):
-        """
-        updating x, y, v & yaw based on acceleration and steering angle
-        a: acceleration, delta: steering angle
-        """
-        # input check
-        if delta >= MAX_STEER:
-            delta = MAX_STEER
-        elif delta <= -MAX_STEER:
-            delta = -MAX_STEER
-
-        self.x = self.x + self.v * np.cos(self.yaw) * DT
-        self.y = 0#self.y + self.v * np.sin(self.yaw) * DT
-        self.yaw = 0#self.yaw + self.v / self.WB * np.tan(delta) * DT
-        self.v = self.v + a * DT
-
-        if self.v > MAX_SPEED:
-            self.v = MAX_SPEED
-        elif self.v < MIN_SPEED:
-            self.v = MIN_SPEED
-
-        return self
-
-    def receive(self, message_list):
-        self.leaders = message_list
 
 class MPC:
     """
@@ -147,105 +108,65 @@ class MPC:
     with respect to cost functions and constraints
     """
     def __init__(self):
-        self.horizon = T    # prediction horizon
-        self.dt = DT
+        self.horizon = N    # prediction horizon
+        self.t_s = t_s
 
-    def predict_motion(vehicle, oa, od, xref):
-        """
-        predicting states over the horizon
-        oa: optimal acc, od: optimal steering angle, xref: reference state
-        """
-        xbar = xref * 0.0
-        xbar[0, 0] = vehicle.x
-        xbar[1, 0] = vehicle.y
-        xbar[2, 0] = vehicle.v
-        xbar[3, 0] = vehicle.yaw
+    # leader MPC function
+    def SHMPCL (A,B,D,acc,x_0,N,R,Q,l,T,V_0,t_s):
+        x = Variable((3,N+1))
+        u = Variable((N))
+        v = Variable((N+1))
+        ctrs = [x[:,0]==x_0 , v[0]==V_0]  # initial point
+        objective = cp.quad_form(x[:,N]-R,Q)  # terminal cost
+        ctrs += [x[2,:]>=a_min , x[2,:]<=a_max]
+        ctrs += [u[:]>=u_min , u[:]<=u_max]
+        ctrs += [ v[:]<=35 , v[:]>=0 ]
+        for k in range(N):
+            ctrs += [x[:,k+1]==A@x[:,k]+B*u[k]]
+            ctrs += [v[k+1]==v[k]+x[2,k]*t_s]
+            objective += cp.quad_form(x[:,k]-R,Q)
 
-        #x=x0[0], y=x0[1], yaw=x0[3], v=x0[2])
-        for (ai, di, i) in zip(oa, od, range(1, T + 1)):
-            vehicle.update_state(ai, di)
-            xbar[0, i] = vehicle.x
-            xbar[1, i] = vehicle.y
-            xbar[2, i] = vehicle.v
-            xbar[3, i] = vehicle.yaw
+        objective_cp=cp.Minimize(objective)
+        prob = cp.Problem(objective_cp,ctrs)
+        prob.solve(verbose=False,solver=cp.GUROBI)
+        np.where(v.value[:]<=0.0001,0,x.value[2,:])
+        return x.value,v.value
 
-        vehicle.x = xbar[0, 0]
-        vehicle.y = xbar[1, 0]
-        vehicle.v = xbar[2, 0]
-        vehicle.yaw = xbar[3, 0]
+    # follower MPC function
+    def SHMPCF (A,B,D,acc,x_0,N,R,Q,l,T,V_0,t_s,P_w,P_hat,q_p,i):
+        x = Variable((3,N+1))
+        u = Variable((N))
+        v = Variable((N+1))
+        d2 = Variable(N,boolean=True)
+        f_1 = Variable(N,boolean=True)
 
-        return xbar
+        ctrs = [x[:,0]==x_0 , v[0]==V_0]  # initial point
 
-    def linear_mpc_control(xref, xbar, vehicle, dref, vehicles_list):
-        """
-        linear mpc control
-        xref: reference point
-        xbar: operational point
-        x0: initial state
-        dref: reference steer angle
-        """
-        x0 = [vehicle.x, vehicle.y, vehicle.v, vehicle.yaw]  # current state
-        x = cvxpy.Variable((NX, T + 1))
-        u = cvxpy.Variable((NU, T))
-        z = cvxpy.Variable()
+        objective = cp.quad_form(x[:,N]-R,Q)  # terminal cost
+        chance_ctr = 0
+        ctrs += [x[2,:]>=a_min , x[2,:]<=a_max]
+        ctrs += [u[:]>=u_min , u[:]<=u_max]
+        ctrs += [v[:]<=35 , v[:]>=0] # speed limit
+        for k in range(N):
+            ctrs += [x[:,k+1]==A@x[:,k]+acc[k]*D + B*u[k] ]
+            ctrs += [v[k+1]==v[k]+x[2,k]*t_s]
+            ctrs += [v[k]-(2*abs(a_min)*t_s)<=100*f_1[k] , v[k]-(2*abs(a_min)*t_s)>=2**-50 + (1-f_1[k])*(-100-2**-50)]
 
-        cost = 0.0
-        constraints = []
+            ctrs += [x[0,k]>=5.0001-v[k]*T]
+            ###################################################################
+            #################### emergency braking condition
+            ctrs += [x[0,k]-l+1<=200*(1-d2[k])]
+            ctrs += [x[0,k]-l+1>=2**-50 + d2[k]*(-200-2**-50)]
+            ctrs += [u[k]<=(d2[k]+f_1[k])/2*(u_min) + (2 - (d2[k]+f_1[k]))*10]
+            ###################################################################
+            objective += cp.quad_form(x[:,k]-R,Q)
+        objective_cp=cp.Minimize(objective)
+        prob = cp.Problem(objective_cp,ctrs)
+        prob.solve(verbose=False,solver=cp.GUROBI)
+        if int(d2.value[0]) == 1:
+            print(f'EMS BRAKE for vehicle {i}' )
+        return x.value,v.value,d2.value[0]
 
-        for t in range(T):
-            cost += cvxpy.quad_form(u[:, t], R) # input cost function
-
-            for leader in vehicle.leaders:
-                if leader.ID < vehicle.ID-1:
-                    z = cvxpy.norm2(x[0,:] -leader.x) + cvxpy.norm2(x[1,:]- leader.y)
-                    cost += gap_weight**2 * (z - (inter_vehicle_time*(vehicle.ID-leader.ID)*vehicle.v))
-                    cost += speed_weight**2 * cvxpy.norm2(x[2,:] - leader.v)
-                    #constraints += [z== inter_vehicle_distance*(vehicle.ID-leader.ID)]
-                if (vehicle.ID - leader.ID) == 1 :
-                    for front in vehicles_list:
-                        if front.ID == leader.ID:
-                            z = cvxpy.norm2(x[0,:] -front.x) + cvxpy.norm2(x[1,:]- front.y)
-                            cost += gap_weight**2 * (z - (inter_vehicle_time*(vehicle.ID-leader.ID)*vehicle.v))
-                            cost += speed_weight**2 * cvxpy.norm2(x[2,:] - front.v)
-                            #constraints += [z== inter_vehicle_distance*(vehicle.ID-leader.ID)]
-
-
-            if t != 0:
-                cost += cvxpy.quad_form(xref[:, t] - x[:, t], Q)    #current state and reference difference
-
-            A, B, C = get_linear_model_matrix(
-                xbar[2, t], xbar[3, t], dref[0, t],vehicle)
-            constraints += [x[:, t + 1] == A @ x[:, t] + B @ u[:, t] + C]
-
-            if t < (T - 1):
-                cost += cvxpy.quad_form(u[:, t + 1] - u[:, t], Rd)  #input difference cost function
-                constraints += [cvxpy.abs(u[1, t + 1] - u[1, t]) <=
-                                MAX_DSTEER * DT]
-
-        cost += cvxpy.quad_form(xref[:, T] - x[:, T], Qf)
-        #constraints += [z >= inter_vehicle_distance/2*(vehicle.ID-leader.ID) , z <= inter_vehicle_distance*3/2*(vehicle.ID-leader.ID)]
-        constraints += [x[:, 0] == x0]
-        constraints += [x[2, :] <= MAX_SPEED]
-        constraints += [x[2, :] >= MIN_SPEED]
-        constraints += [cvxpy.abs(u[0, :]) <= MAX_ACCEL]
-        constraints += [cvxpy.abs(u[1, :]) <= MAX_STEER]
-
-        prob = cvxpy.Problem(cvxpy.Minimize(cost), constraints)
-        prob.solve(solver=cvxpy.GUROBI, verbose=False)#ECOS
-
-        if prob.status == cvxpy.OPTIMAL or prob.status == cvxpy.OPTIMAL_INACCURATE:
-            ox = get_nparray_from_matrix(x.value[0, :])
-            oy = get_nparray_from_matrix(x.value[1, :])
-            ov = get_nparray_from_matrix(x.value[2, :])
-            oyaw = get_nparray_from_matrix(x.value[3, :])
-            oa = get_nparray_from_matrix(u.value[0, :])
-            odelta = get_nparray_from_matrix(u.value[1, :])
-            #print(get_nparray_from_matrix(z.value))
-        else:
-            print("Error: Cannot solve mpc..")
-            oa, odelta, ox, oy, oyaw, ov = None, None, None, None, None, None
-
-        return oa, odelta, ox, oy, oyaw, ov
 
 class communication():
         def __init__(self, vehicle):
@@ -293,26 +214,87 @@ def main():
         message_list.append(message)
 
     while done == False:
-        plt.cla()
         print(counter)
+
         for vehicle in vehicles_list:
-            if check_goal(vehicle, vehicle.target_ind, len(cx)):
-                done = True
-
-            vehicle.calc_ref_trajectory(cx, cy, cyaw, sp, dl)
-
             if (counter % 1) == 0 :
                 vehicle.receive(message_list)
 
             oa, odelta, ox, oy, oyaw, ov = MPC.iterative_linear_mpc_control(vehicle.xref, vehicle, vehicle.dref, vehicle.oa, vehicle.odelta,vehicles_list)
 
-            if odelta is not None:
-                di, ai = odelta[0], oa[0]
+
+            ###################################################################
+            if i==0: # leader vehicle
+                acc = np.zeros((N+1))
+                A = np.array([ [0,0,0] , [0, 1 ,t_s] , [0,0,1-t_s/f] ])
+                V_max = 20
+                V_min = -20
+                Q = np.array([ [0,0,0] , [0,5,0] , [0,0,1] ])
+                w_0 = np.zeros(3)
+                if t<220:  # different speed references for the leader vehicle  150
+                    R = np.array([0,27,0])
+                elif t<400: #250
+                    R = np.array([0,0,0])
+                else:
+                    R = np.array([0,20,0])
+
+                x_0 = np.array([q_t[0,t],v_t[0,t],a_t[0,t]])
+            ####################################################################
+            else: # follower vehicles
+                A = np.array([ [1 ,t_s,-T*t_s] , [0, 1 ,-t_s] , [0,0,1-t_s/f] ])
+                acc = a[i-1,:]
+                R = np.array([l,0,0])
+                V_min = -20
+                V_max = 20
+                Q = np.array([ [2,0,0] , [0,1,0] , [0,0,1] ])
+                r = random.random()
+                w_0 = np.zeros(np.size(P_w))
+                w_0[np.where(r<=AP_w)[0][0]] = 1
+                E[i,t] = M_w@w_0
+                x_0 = np.array([dd_t[i,t]+M_w@w_0,d_v[i],a_t[i,t]])
+
+            ########### calling the MPC function
+            if i==0:  # MPC for the leader
+                O = SHMPCL (A,B,D,acc,V_min,V_max,a_min,a_max,x_0,N,R,Q,l,T,v_t[i,t],t_s,u_min,u_max)
+            else:     # MPC for the followers
+                #tt = time.process_time()
+                O = SHMPCF (A,B,D,acc,V_min,V_max,a_min,a_max,x_0,N,R,Q,l,T,v_t[i,t],
+                                t_s,np.log(P_w),np.log(P_hat),q_p,i,u_min,u_max,G_w)
+                #elapsed = time.process_time() - tt
+                #print(elapsed)
+            ###########################################################################
+            d_v[i] = O[0][1,1]
+            v_t[i,t+1] = O[1][1]
+            if v_t[i,t+1]<0:
+                v_t[i,t+1]=0
+            a_t[i,t+1] = O[0][2,1]
+            q_t[i,t+1] = q_t[i,t] + t_s*v_t[i,t]
+            r = random.random()
+            if r>0.9:
+                loss_flag[i,t]=1
+            #d_v2[i] = v_t[i-1,t+1]-v_t[i,t+1]
+            if t%comm_rate == 0 and loss_flag[i,t]==0:  # data exchange every 5*t_s
+                aa[i,:] = O[0][2,:]
+                d_v2[i] = v_t[i-1,t+1]-v_t[i,t+1]
+            elif i>0:
+                d_v2[i] = O[0][1,1]
+                a[i,0] = (a[i,-1]-a[i,-2]) + a[i,-1]
+
+                if a[i,0]>a_max:
+                    a[i,0]=a_max
+                elif a[i,0]<a_min:
+                    a[i,0]=a_min
+                aa[i,:] = np.roll(a[i,:],-1)
+
+            if i==0:
+                dd_t[i,t+1] = O[0][0,1]
+            else:
+                dd_t[i,t+1] = q_t[i-1,t+1] - q_t[i,t+1] - T*v_t[i,t+1]
+                d_e[i,t] = O[2]
+
 
             vehicle.update_state(ai, di)
             vehicle.hx = np.append(vehicle.x, vehicle.hx)
-            vehicle.hy = np.append(vehicle.y, vehicle.hy)
-            vehicle.hyaw = np.append(vehicle.yaw, vehicle.hyaw)
             vehicle.hv = np.append(vehicle.v, vehicle.hv)
             vehicle.ht = np.append(time, vehicle.ht)
             vehicle.hd = np.append(di, vehicle.hd)
@@ -333,7 +315,7 @@ def main():
                     if message.ID == vehicle.ID:
                         message.send(vehicle)
 
-        time = time + DT
+        time = time + t_s
         counter = counter + 1
 
     plt.close("all")

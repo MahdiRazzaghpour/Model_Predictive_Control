@@ -8,7 +8,7 @@ import scipy.stats as ss
 import time
 
 # leader MPC function
-def SHMPCL (A,B,D,acc,V_min,V_max,a_min,a_max,x_0,N,R,Q,l,T,V_0,t_s,u_min,u_max):
+def SHMPCL (A,B,D,acc,x_0,R,Q,l,V_0):
     x = Variable((3,N+1))
     u = Variable((N))
     v = Variable((N+1))
@@ -29,10 +29,9 @@ def SHMPCL (A,B,D,acc,V_min,V_max,a_min,a_max,x_0,N,R,Q,l,T,V_0,t_s,u_min,u_max)
     return x.value,v.value
 
 # # follower MPC function
-def SHMPCF (A,B,D,acc,V_min,V_max,a_min,a_max,x_0,N,R,Q,l,T,V_0,t_s,P_w,P_hat,q_p,i,u_min,u_max,G_w):
+def SHMPCF (A,B,D,acc,x_0,R,Q,l,V_0,q_p,i):
     x = Variable((3,N+1))
     u = Variable((N))
-    w = Variable((11,N),boolean=True)
     v = Variable((N+1))
     d2 = Variable(N,boolean=True)
     f_1 = Variable(N,boolean=True)
@@ -44,24 +43,22 @@ def SHMPCF (A,B,D,acc,V_min,V_max,a_min,a_max,x_0,N,R,Q,l,T,V_0,t_s,P_w,P_hat,q_
     ctrs += [x[2,:]>=a_min , x[2,:]<=a_max]
     ctrs += [u[:]>=u_min , u[:]<=u_max]
     ctrs += [v[:]<=35 , v[:]>=0] # speed limit
-    for k in range(N):
-        ctrs += [x[:,k+1]==A@x[:,k]+acc[k]*D + B*u[k]  + G_w@w[:,k] ]
-        ctrs += [v[k+1]==v[k]+x[2,k]*t_s]
-        ctrs += [v[k]-(2*abs(a_min)*t_s)<=100*f_1[k] , v[k]-(2*abs(a_min)*t_s)>=2**-50 + (1-f_1[k])*(-100-2**-50)]
 
+    for j in range(V_N):
+        if (j - V_NC >= 0):
+            for k in range(N):
+                ctrs += [x[:,k+1]==A@x[:,k]+acc[j,k]*D + B*u[k]]
+                ctrs += [v[k+1]==v[k]+x[2,k]*t_s]
+                ctrs += [v[k]-(2*abs(a_min)*t_s)<=100*f_1[k] , v[k]-(2*abs(a_min)*t_s)>=2**-50 + (1-f_1[k])*(-100-2**-50)]
 
-        ctrs += [np.ones(11)@w[:,k]==1]
-        ctrs += [x[0,k]>=5.0001-v[k]*T]
-        ###################################################################
-        #################### emergency braking condition
-        ctrs += [x[0,k]-l+1<=200*(1-d2[k])]
-        ctrs += [x[0,k]-l+1>=2**-50 + d2[k]*(-200-2**-50)]
-        ctrs += [u[k]<=(d2[k]+f_1[k])/2*(u_min) + (2 - (d2[k]+f_1[k]))*10]
-        ###################################################################
-        chance_ctr += w[:,k]@P_w
-        objective += cp.quad_form(x[:,k]-R,Q)
-    ctrs += [chance_ctr>=P_hat]
-    objective += -q_p*chance_ctr
+                ctrs += [x[0,k]>=5.0001-v[k]*T]
+                ###################################################################
+                #################### emergency braking condition
+                ctrs += [x[0,k]-l+1<=200*(1-d2[k])]
+                ctrs += [x[0,k]-l+1>=2**-50 + d2[k]*(-200-2**-50)]
+                ctrs += [u[k]<=(d2[k]+f_1[k])/2*(u_min) + (2 - (d2[k]+f_1[k]))*10]
+                ###################################################################
+                objective += cp.quad_form(x[:,k]-R,Q)
     objective_cp=cp.Minimize(objective)
     prob = cp.Problem(objective_cp,ctrs)
     prob.solve(verbose=False,solver=cp.GUROBI)
@@ -70,11 +67,13 @@ def SHMPCF (A,B,D,acc,V_min,V_max,a_min,a_max,x_0,N,R,Q,l,T,V_0,t_s,P_w,P_hat,q_
     return x.value,v.value,d2.value[0]
 
 # Main
-V_N = 1 #number of vehicles
+V_N = 5 #number of vehicles
+V_NC = 4
+N = 2  #prediction horizon
+T = 1
+
 T_F = 700
 t_s = 0.1 # sampling time
-N = 7  #prediction horizon
-T = 1
 l_v = 5
 f = 0.1
 l = 2+l_v
@@ -87,20 +86,7 @@ u_max = 4
 A = np.array([ [1 ,t_s,-T*t_s] , [0, 1 ,-t_s] , [0,0,1-t_s/f] ])
 B = np.array([0 , 0 , t_s/f])
 D = np.array([0 , t_s , 0])
-####### uncontrolled event variables
-M_w = np.arange(-5, 6)/20
-xU, xL = M_w + 0.025, M_w - 0.025
-prob = ss.norm.cdf(xU, scale = 0.25/3) - ss.norm.cdf(xL, scale = 0.25/3)
-P_w = prob / prob.sum() #normalize the probabilities so their sum is 1
-AP_w = np.ones((P_w.size))
-AP_w[0]=P_w[0]
-for j in range(1,P_w.size):
-    AP_w[j]= AP_w[j-1]+P_w[j]
-G_w = np.zeros((3,np.size(P_w)))
-G_w[0,:] = M_w
 
-
-P_hat = 0.1**N
 q_p = 100
 
 ####### independent dynamics
@@ -111,7 +97,7 @@ a_t = np.zeros((V_N,T_F+1))
 dd_t = np.zeros((V_N,T_F+1))
 ############################
 x_0 = np.zeros((V_N,3))
-acc = np.zeros((N+1))
+acc = np.zeros((V_N,N+1))
 a = np.zeros((V_N,N+1))
 aa = np.zeros((V_N,N+1))
 d_e = np.zeros((V_N,T_F+1))
@@ -136,7 +122,7 @@ for t in range(T_F):
     for i in range (V_N):
         ###################################################################
         if i==0: # leader vehicle
-            acc = np.zeros((N+1))
+            acc = np.zeros((V_N,N+1))
             A = np.array([ [0,0,0] , [0, 1 ,t_s] , [0,0,1-t_s/f] ])
             V_max = 20
             V_min = -20
@@ -153,24 +139,19 @@ for t in range(T_F):
         ####################################################################
         else: # follower vehicles
             A = np.array([ [1 ,t_s,-T*t_s] , [0, 1 ,-t_s] , [0,0,1-t_s/f] ])
-            acc = a[i-1,:]
+            acc[i,:] = a[i-1,:]
             R = np.array([l,0,0])
             V_min = -20
             V_max = 20
             Q = np.array([ [2,0,0] , [0,1,0] , [0,0,1] ])
-            r = random.random()
-            w_0 = np.zeros(np.size(P_w))
-            w_0[np.where(r<=AP_w)[0][0]] = 1
-            E[i,t] = M_w@w_0
-            x_0 = np.array([dd_t[i,t]+M_w@w_0,d_v[i],a_t[i,t]])
+            x_0 = np.array([dd_t[i,t],d_v[i],a_t[i,t]])
 
         ########### calling the MPC function
         if i==0:  # MPC for the leader
-            O = SHMPCL (A,B,D,acc,V_min,V_max,a_min,a_max,x_0,N,R,Q,l,T,v_t[i,t],t_s,u_min,u_max)
+            O = SHMPCL (A,B,D,acc,x_0,R,Q,l,v_t[i,t])
         else:     # MPC for the followers
             #tt = time.process_time()
-            O = SHMPCF (A,B,D,acc,V_min,V_max,a_min,a_max,x_0,N,R,Q,l,T,v_t[i,t],
-                            t_s,np.log(P_w),np.log(P_hat),q_p,i,u_min,u_max,G_w)
+            O = SHMPCF (A,B,D,acc,x_0,R,Q,l,v_t[i,t],q_p,i)
             #elapsed = time.process_time() - tt
             #print(elapsed)
         ###########################################################################
@@ -181,7 +162,7 @@ for t in range(T_F):
         a_t[i,t+1] = O[0][2,1]
         q_t[i,t+1] = q_t[i,t] + t_s*v_t[i,t]
         r = random.random()
-        if r>0.9:
+        if r>0.99:
             loss_flag[i,t]=1
         #d_v2[i] = v_t[i-1,t+1]-v_t[i,t+1]
         if t%comm_rate == 0 and loss_flag[i,t]==0:  # data exchange every 5*t_s
